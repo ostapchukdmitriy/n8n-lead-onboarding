@@ -1,0 +1,470 @@
+{
+  "name": "Daily Lead Digest – 09:00 AI Summary",
+  "id": "lead-onboarding-daily-digest",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "errorWorkflow": "lead-onboarding-error-handler",
+    "timezone": "Europe/Vilnius"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [],
+  "pinData": {},
+  "nodes": [
+    {
+      "id": "e1000000-0000-4000-8000-000000000001",
+      "name": "Every day at 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "notes": "Runs in the workflow timezone (Settings → Timezone). Change the cron to adjust the send time.",
+      "notesInFlow": true
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f0000000-0000-4000-8000-000000000001",
+              "name": "cfg.sheetId",
+              "type": "string",
+              "value": "YOUR_GOOGLE_SHEET_ID"
+            },
+            {
+              "id": "f0000000-0000-4000-8000-000000000002",
+              "name": "cfg.sheetTab",
+              "type": "string",
+              "value": "Leads"
+            },
+            {
+              "id": "f0000000-0000-4000-8000-000000000003",
+              "name": "cfg.digestTo",
+              "type": "string",
+              "value": "sales@example.com"
+            },
+            {
+              "id": "f0000000-0000-4000-8000-000000000004",
+              "name": "cfg.fromEmail",
+              "type": "string",
+              "value": "Lead Bot <bot@example.com>"
+            },
+            {
+              "id": "f0000000-0000-4000-8000-000000000005",
+              "name": "cfg.telegramChatId",
+              "type": "string",
+              "value": "-1001234567890"
+            },
+            {
+              "id": "f0000000-0000-4000-8000-000000000006",
+              "name": "cfg.companyName",
+              "type": "string",
+              "value": "Acme Studio"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000003",
+      "name": "Read All Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        300
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.cfg.sheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $json.cfg.sheetTab }}"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Reads the whole tab. For sheets > 10k rows switch to a filter on created_date instead.",
+      "notesInFlow": true
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000004",
+      "name": "Filter Yesterday & Aggregate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Keeps only leads created yesterday (workflow timezone) and collapses them into ONE item\n// with counts, a plain-text list for the AI prompt and an HTML table for the email.\nconst cfg = $('Config').first().json.cfg;\nconst tz = $workflow.settings?.timezone ?? 'UTC';\n\nconst ymd = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);\nconst yesterday = ymd(new Date(Date.now() - 24 * 60 * 60 * 1000));\n\nconst rows = $input.all()\n  .map((i) => i.json)\n  .filter((r) => r && r.email) // drop the empty placeholder item from 'Always output data'\n  .filter((r) => String(r.created_date ?? String(r.created_at ?? '').slice(0, 10)) === yesterday)\n  .map((r) => ({\n    name: r.name ?? '',\n    email: r.email ?? '',\n    company: r.company ?? '',\n    source: r.source ?? '',\n    score: Number(r.score ?? 0),\n    message: String(r.message ?? '').slice(0, 300),\n  }))\n  .sort((a, b) => b.score - a.score);\n\nconst esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst plainList = rows\n  .map((r, i) => `${i + 1}. ${r.name} <${r.email}> — ${r.company || 'no company'} — score ${r.score} — via ${r.source}\\n   \"${r.message}\"`)\n  .join('\\n');\n\nconst tableRows = rows\n  .map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.company)}</td><td><a href=\"mailto:${esc(r.email)}\">${esc(r.email)}</a></td><td style=\\\"text-align:center\\\">${r.score}</td><td>${esc(r.message)}</td></tr>`)\n  .join('');\n\nconst hot = rows.filter((r) => r.score >= 60).length;\nconst avg = rows.length ? Math.round(rows.reduce((s, r) => s + r.score, 0) / rows.length) : 0;\n\nreturn [{\n  json: {\n    cfg,\n    date: yesterday,\n    count: rows.length,\n    hot,\n    avgScore: avg,\n    leads: rows,\n    plainList,\n    tableRows,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000005",
+      "name": "Any Leads?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f0000000-0000-4000-8000-000000000010",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000006",
+      "name": "Summarise with AI",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a sales assistant for {{ $json.cfg.companyName }}. Below are the inbound leads received on {{ $json.date }} ({{ $json.count }} total, {{ $json.hot }} scored 60+).\n\nWrite a short morning briefing for the sales team in plain English:\n1. One-sentence overview (volume + quality).\n2. \"Follow up first\": the 3 most promising leads and *why* (one line each, mention name and company).\n3. Any patterns worth noting (industries, common requests, sources).\n\nKeep it under 180 words. Do not invent details that are not in the data. Output plain text, no markdown headings.\n\nLEADS:\n{{ $json.plainList }}",
+        "hasOutputParser": false,
+        "batching": {}
+      },
+      "notes": "Provider-agnostic LLM chain. The model is the sub-node attached below – swap Anthropic for OpenAI (or a local Ollama model) without touching the prompt.",
+      "notesInFlow": true
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000007",
+      "name": "Anthropic Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        1160,
+        420
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "MODEL_PLACEHOLDER",
+          "cachedResultName": "Pick a model in the UI"
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokensToSample": 600
+        }
+      },
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE_ME",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000008",
+      "name": "OpenAI Chat Model (alt)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1420,
+        420
+      ],
+      "disabled": true,
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "MODEL_PLACEHOLDER",
+          "cachedResultName": "Pick a model in the UI"
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 600
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI account"
+        }
+      },
+      "notes": "DISABLED and not connected (the chain accepts one model). To switch provider: disable the Anthropic node, enable this one and drag its connector onto 'Summarise with AI'.",
+      "notesInFlow": true
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000009",
+      "name": "Compose Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const agg = $('Filter Yesterday & Aggregate').first().json;\nconst ai = String($input.first().json.text ?? $input.first().json.output ?? '').trim();\nconst esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst subject = `📊 ${agg.count} new lead${agg.count === 1 ? '' : 's'} on ${agg.date} · ${agg.hot} hot`;\n\nconst html = `<!doctype html><html><body style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1f2937;max-width:720px;margin:0 auto;padding:24px;line-height:1.5\">\n<h2 style=\"margin:0 0 4px\">Daily lead digest — ${esc(agg.date)}</h2>\n<p style=\"margin:0 0 20px;color:#6b7280\">${agg.count} new · ${agg.hot} hot (score ≥ 60) · average score ${agg.avgScore}</p>\n<div style=\"background:#eef2ff;border-left:4px solid #6366f1;padding:14px 18px;border-radius:6px;white-space:pre-wrap;margin-bottom:24px\">${esc(ai)}</div>\n<table style=\"border-collapse:collapse;width:100%;font-size:13px\">\n<thead><tr style=\"background:#f3f4f6;text-align:left\"><th style=\"padding:8px\">Name</th><th style=\"padding:8px\">Company</th><th style=\"padding:8px\">Email</th><th style=\"padding:8px\">Score</th><th style=\"padding:8px\">Message</th></tr></thead>\n<tbody>${agg.tableRows.replace(/<td/g, '<td style=\"padding:8px;border-top:1px solid #e5e7eb;vertical-align:top\"')}</tbody>\n</table>\n<p style=\"font-size:12px;color:#9ca3af;margin-top:28px\">Generated automatically by n8n · ${esc(agg.cfg.companyName)}</p>\n</body></html>`;\n\nconst telegram = `📊 <b>Daily digest ${esc(agg.date)}</b>\\n${agg.count} new leads · ${agg.hot} hot 🔥\\n\\n${esc(ai).slice(0, 1500)}`;\n\nreturn [{ json: { cfg: agg.cfg, subject, html, telegram } }];\n"
+      }
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000010",
+      "name": "Compose 'Quiet Day'",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        560
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const agg = $input.first().json;\nconst subject = `📊 No new leads on ${agg.date}`;\nconst html = `<!doctype html><html><body style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1f2937;max-width:560px;margin:0 auto;padding:24px\">\n<h2>Daily lead digest — ${agg.date}</h2>\n<p>No new leads came in yesterday. The intake workflow is running normally (this email is the heartbeat).</p>\n<p style=\"font-size:12px;color:#9ca3af\">Generated automatically by n8n · ${agg.cfg.companyName}</p>\n</body></html>`;\nconst telegram = `📊 <b>Daily digest ${agg.date}</b>\\nNo new leads yesterday. Pipeline healthy ✅`;\nreturn [{ json: { cfg: agg.cfg, subject, html, telegram } }];\n"
+      },
+      "notes": "A heartbeat email/alert on quiet days tells the client the automation is alive.",
+      "notesInFlow": true
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000011",
+      "name": "Send Digest Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1760,
+        200
+      ],
+      "parameters": {
+        "fromEmail": "={{ $json.cfg.fromEmail }}",
+        "toEmail": "={{ $json.cfg.digestTo }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_ME",
+          "name": "SMTP (MailerSend / Postmark / Gmail)"
+        }
+      }
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000012",
+      "name": "Telegram: Digest",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1760,
+        420
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.cfg.telegramChatId }}",
+        "text": "={{ $json.telegram }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true,
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Sales Bot"
+        }
+      }
+    },
+    {
+      "id": "e1000000-0000-4000-8000-000000000013",
+      "name": "Sticky: Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        60
+      ],
+      "parameters": {
+        "width": 980,
+        "height": 170,
+        "color": 5,
+        "content": "## Daily digest\n**09:00 → read yesterday's leads from the sheet → AI summary → HTML email + Telegram**\n\nThe AI step is a *Basic LLM Chain* with a swappable model sub-node (Anthropic by default, OpenAI disabled). Pick the model from the dropdown after attaching a credential. On days with no leads a short 'heartbeat' email is sent instead so the client knows the automation is alive."
+      }
+    }
+  ],
+  "connections": {
+    "Every day at 09:00": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Read All Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read All Leads": {
+      "main": [
+        [
+          {
+            "node": "Filter Yesterday & Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Yesterday & Aggregate": {
+      "main": [
+        [
+          {
+            "node": "Any Leads?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Leads?": {
+      "main": [
+        [
+          {
+            "node": "Summarise with AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose 'Quiet Day'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarise with AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarise with AI": {
+      "main": [
+        [
+          {
+            "node": "Compose Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Digest Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram: Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose 'Quiet Day'": {
+      "main": [
+        [
+          {
+            "node": "Send Digest Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram: Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "name": "Error Handler – Telegram Alert",
+  "id": "lead-onboarding-error-handler",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [],
+  "pinData": {},
+  "nodes": [
+    {
+      "id": "b1000000-0000-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {},
+      "notes": "Fires whenever a workflow that has this one set as its 'Error workflow' fails.",
+      "notesInFlow": true
+    },
+    {
+      "id": "b1000000-0000-4000-8000-000000000002",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Normalises the two shapes n8n uses for error payloads (execution errors vs trigger errors).\nconst e = $input.first().json;\nconst wf = e.workflow ?? {};\nconst exec = e.execution ?? {};\nconst trig = e.trigger ?? {};\n\nconst esc = (s) => String(s ?? '')\n  .replace(/&/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;');\n\nconst message = exec.error?.message ?? trig.error?.message ?? 'Unknown error';\nconst node = exec.lastNodeExecuted ?? trig.error?.node?.name ?? 'n/a';\nconst mode = exec.mode ?? trig.mode ?? 'n/a';\nconst url = exec.url ?? '';\nconst stack = String(exec.error?.stack ?? '').split('\\n').slice(0, 4).join('\\n');\n\nconst lines = [\n  `🚨 <b>n8n workflow failed</b>`,\n  `📄 Workflow: <b>${esc(wf.name)}</b> (id ${esc(wf.id)})`,\n  `🧩 Node: <code>${esc(node)}</code>`,\n  `⚙️ Mode: ${esc(mode)}`,\n  `🕒 ${new Date().toISOString()}`,\n  ``,\n  `❌ <b>Error</b>`,\n  `<pre>${esc(message).slice(0, 800)}</pre>`,\n];\nif (stack) lines.push(`<pre>${esc(stack).slice(0, 600)}</pre>`);\nif (url) lines.push(`🔗 <a href=\"${esc(url)}\">Open execution</a>`);\n\nreturn [{ json: { text: lines.join('\\n'), workflowName: wf.name, node, message, url } }];\n"
+      }
+    },
+    {
+      "id": "b1000000-0000-4000-8000-000000000003",
+      "name": "Telegram: Alert Ops",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "-1001234567890",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true,
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Sales Bot"
+        }
+      },
+      "notes": "Set chatId to your ops / alerts channel. It can be the same bot as the sales bot.",
+      "notesInFlow": true
+    },
+    {
+      "id": "b1000000-0000-4000-8000-000000000004",
+      "name": "Slack: Alert Ops (optional)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        480,
+        520
+      ],
+      "disabled": true,
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#n8n-alerts"
+        },
+        "text": "=:rotating_light: *n8n workflow failed* — `{{ $json.workflowName }}` at node `{{ $json.node }}`\n```{{ $json.message }}```\n{{ $json.url }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "id": "b1000000-0000-4000-8000-000000000005",
+      "name": "Sticky: How to wire",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        60
+      ],
+      "parameters": {
+        "width": 760,
+        "height": 170,
+        "color": 3,
+        "content": "## Error handler\nOpen **Lead Onboarding** and **Daily Digest** → *Settings* → *Error workflow* → pick this workflow.\n\nEvery failed execution then posts the workflow name, failing node, error message and a deep link to the execution in Telegram (and optionally Slack).\n\n⚠️ **Activate this workflow** (toggle top-right). Since n8n 2.x an inactive error workflow is skipped with the log line *\"is not active and cannot be executed\"*."
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Alert Ops",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack: Alert Ops (optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

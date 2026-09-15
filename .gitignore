@@ -1,0 +1,12 @@
+.env
+export/
+*.pyc
+__pycache__/
+.pytest_cache/
+.DS_Store
+docs/workflow.dot
+.venv/
+.cache/
+.pytest_cache/
+__pycache__/
+.env
